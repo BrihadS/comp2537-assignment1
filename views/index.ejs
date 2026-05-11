@@ -1,0 +1,19 @@
+<%- include('templates/header', { title: 'Home', authenticated, userType }) %>
+
+<% if (authenticated) { %>
+    <div class="text-center mt-5">
+        <h1 class="display-5">Hello, <%= name %>!</h1>
+        <p class="lead">Welcome back to the members area.</p>
+        <a href="/members" class="btn btn-primary me-2">Go to Members Area</a>
+        <a href="/logout" class="btn btn-outline-secondary">Logout</a>
+    </div>
+<% } else { %>
+    <div class="text-center mt-5">
+        <h1 class="display-5">Welcome!</h1>
+        <p class="lead">Please sign up or log in to access the members area.</p>
+        <a href="/signup" class="btn btn-primary me-2">Sign Up</a>
+        <a href="/login" class="btn btn-outline-primary">Log In</a>
+    </div>
+<% } %>
+
+<%- include('templates/footer') %>

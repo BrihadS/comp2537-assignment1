@@ -1,4 +1,3 @@
-//Load secret environment variables
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
@@ -10,188 +9,196 @@ const { MongoClient } = require('mongodb');
 const app = express();
 const port = process.env.PORT || 3000;
 
-//Middleware (Reading form data and displaying images)
+//Middleware
 app.use(express.urlencoded({ extended: false }));
 app.use(express.static('public'));
+app.set('view engine', 'ejs');
 
-//Construct connection string using .env variables
+//MongoDB setup
 const mongoUri = `mongodb+srv://${process.env.MONGODB_USER}:${process.env.MONGODB_PASSWORD}@${process.env.MONGODB_HOST}/?retryWrites=true&w=majority`;
-
-const client = new MongoClient(mongoUri, 
-{
-    tlsAllowInvalidCertificates: true
-});
+const client = new MongoClient(mongoUri, { tlsAllowInvalidCertificates: true });
 let db;
 let userCollection;
 
-async function connectDB() 
-{
-    try 
-    {
+async function connectDB() {
+    try {
         await client.connect();
         db = client.db(process.env.MONGODB_DATABASE);
         userCollection = db.collection('users');
         console.log("Successfully connected to MongoDB Atlas!");
-    } catch (err){
+    } catch (err) {
         console.error("Failed to connect to MongoDB:", err);
     }
 }
 
-//Session Setup
-app.use(session(
-{
+//Session setup
+app.use(session({
     secret: process.env.NODE_SESSION_SECRET,
-    store: MongoStore.create(
-    {
+    store: MongoStore.create({
         mongoUrl: mongoUri,
         crypto: { secret: process.env.MONGODB_SESSION_SECRET }
     }),
     resave: false,
     saveUninitialized: false,
-    cookie: { maxAge: 1000 * 60 * 60 } //expires in 1 hour
+    cookie: { maxAge: 1000 * 60 * 60 } // 1 hour
 }));
 
-//1. Home Page
-app.get('/', (req, res) => 
-{
-    if (req.session.authenticated) 
-    {
-        res.send(`
-            <h1>Hello, ${req.session.name}!</h1>
-            <a href="/members"><button>Go to Members Area</button></a><br><br>
-            <a href="/logout"><button>Logout</button></a>
-        `);
-    } 
-    else 
-    {
-        res.send(`
-            <h1>Welcome!</h1>
-            <a href="/signup"><button>Sign up</button></a><br><br>
-            <a href="/login"><button>Log in</button></a>
-        `);
+// ── Middleware ────
+
+function requireLogin(req, res, next) {
+    if (!req.session.authenticated) {
+        return res.redirect('/login');
     }
+    next();
+}
+
+function requireAdmin(req, res, next) {
+    if (!req.session.authenticated) {
+        return res.redirect('/login');
+    }
+    if (req.session.user_type !== 'admin') {
+        return res.status(403).render('403', {
+            title: 'Access Denied',
+            authenticated: req.session.authenticated || false,
+            userType: req.session.user_type || null
+        });
+    }
+    next();
+}
+
+// ── Routes ───
+
+//Home
+app.get('/', (req, res) => {
+    res.render('index', {
+        authenticated: req.session.authenticated || false,
+        name: req.session.name || null,
+        userType: req.session.user_type || null
+    });
 });
 
-//2. Sign Up Page
-app.get('/signup', (req, res) => 
-{
-    res.send(`
-        <h2>Create User</h2>
-        <form action="/signupSubmit" method="POST">
-            <input type="text" name="name" placeholder="Name"><br>
-            <input type="email" name="email" placeholder="Email"><br>
-            <input type="password" name="password" placeholder="Password"><br>
-            <button type="submit">Submit</button>
-        </form>
-    `);
+//Sign Up (get)
+app.get('/signup', (req, res) => {
+    res.render('signup', { errorMsg: null });
 });
 
-app.post('/signupSubmit', async (req, res) => 
-{
-    //Joi Validation
-    const schema = Joi.object(
-    {
+//Sign Up (post)
+app.post('/signupSubmit', async (req, res) => {
+    const schema = Joi.object({
         name: Joi.string().max(50).required(),
         email: Joi.string().email().required(),
         password: Joi.string().max(20).required()
     });
 
-    const validationResult = schema.validate(req.body);
-    if (validationResult.error != null) 
-    {
-        return res.send(`
-            <p>Error: ${validationResult.error.details[0].message}</p>
-            <a href="/signup">Try again</a>
-        `);
+    const { error, value } = schema.validate(req.body);
+    if (error) {
+        return res.render('signup', { errorMsg: error.details[0].message });
     }
 
-    const { name, email, password } = req.body;
-    const hashedPassword = await bcrypt.hash(password, 10); //hash password
+    const { name, email, password } = value;
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    await userCollection.insertOne({ name, email, password: hashedPassword });
-    
+    await userCollection.insertOne({
+        name,
+        email,
+        password: hashedPassword,
+        user_type: 'user'
+    });
+
     req.session.authenticated = true;
     req.session.name = name;
+    req.session.email = email;
+    req.session.user_type = 'user';
     res.redirect('/members');
 });
 
-//3. Log In Page
-app.get('/login', (req, res) => 
-{
-    res.send(`
-        <h2>Log In</h2>
-        <form action="/loginSubmit" method="POST">
-            <input type="email" name="email" placeholder="Email"><br>
-            <input type="password" name="password" placeholder="Password"><br>
-            <button type="submit">Submit</button>
-        </form>
-    `);
+//Log In (get)
+app.get('/login', (req, res) => {
+    res.render('login', { errorMsg: null });
 });
 
-app.post('/loginSubmit', async (req, res) => 
-{
-    const schema = Joi.object(
-    {
+//Log In (post)
+app.post('/loginSubmit', async (req, res) => {
+    const schema = Joi.object({
         email: Joi.string().email().required(),
         password: Joi.string().max(20).required()
     });
 
-    const validationResult = schema.validate(req.body);
-    if (validationResult.error != null) {
-        return res.send(`
-            <p>Invalid input formatting.</p>
-            <a href="/login">Try again</a>
-        `);
+    const { error, value } = schema.validate(req.body);
+    if (error) {
+        return res.render('login', { errorMsg: 'Invalid input.' });
     }
 
-    const { email, password } = req.body;
-    const user = await userCollection.findOne({ email: email });
+    const { email, password } = value;
+    const user = await userCollection.findOne({ email });
 
-    if (!user || !(await bcrypt.compare(password, user.password))) 
-    {
-        return res.send(`
-            <p>Invalid email/password combination.</p>
-            <a href="/login">Try again</a>
-        `);
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+        return res.render('login', { errorMsg: 'Invalid email/password combination.' });
     }
 
     req.session.authenticated = true;
     req.session.name = user.name;
+    req.session.email = user.email;
+    req.session.user_type = user.user_type || 'user';
     res.redirect('/members');
 });
 
-//4. Members Only Page
-app.get('/members', (req, res) => {
-    if (!req.session.authenticated) 
-    {
-        return res.redirect('/');
-    }
-    
-    const randomImgNum = Math.floor(Math.random() * 3) + 1;
-    res.send(`
-        <h1>Hello, ${req.session.name}.</h1>
-        <img src="/${randomImgNum}.jpg" alt="Random Image" width="300"><br><br>
-        <a href="/logout"><button>Sign out</button></a>
-    `);
+//Members Page
+app.get('/members', requireLogin, (req, res) => {
+    res.render('members', {
+        authenticated: true,
+        name: req.session.name,
+        userType: req.session.user_type
+    });
 });
 
-//5. Log Out Page
-app.get('/logout', (req, res) => 
-{
+//Log Out
+app.get('/logout', (req, res) => {
     req.session.destroy();
     res.redirect('/');
 });
 
-//6. 404 Page
-app.get('*splat', (req, res) => 
-{
-    res.status(404).send('<h1>Page not found - 404</h1>');
+//Admin Page
+app.get('/admin', requireAdmin, async (req, res) => {
+    const users = await userCollection.find({}).toArray();
+    res.render('admin', {
+        authenticated: true,
+        userType: req.session.user_type,
+        users
+    });
 });
 
-connectDB().then(() => 
-{
-    app.listen(port, () => 
-    {
+//Promote user to admin
+app.get('/admin/promote/:email', requireAdmin, async (req, res) => {
+    const schema = Joi.string().email().required();
+    const { error, value } = schema.validate(req.params.email);
+    if (error) return res.redirect('/admin');
+
+    await userCollection.updateOne({ email: value }, { $set: { user_type: 'admin' } });
+    res.redirect('/admin');
+});
+
+//Demote user to regular user
+app.get('/admin/demote/:email', requireAdmin, async (req, res) => {
+    const schema = Joi.string().email().required();
+    const { error, value } = schema.validate(req.params.email);
+    if (error) return res.redirect('/admin');
+
+    await userCollection.updateOne({ email: value }, { $set: { user_type: 'user' } });
+    res.redirect('/admin');
+});
+
+//404 Page
+app.get('*splat', (req, res) => {
+    res.status(404).render('404', {
+        title: 'Page Not Found',
+        authenticated: req.session.authenticated || false,
+        userType: req.session.user_type || null
+    });
+});
+
+connectDB().then(() => {
+    app.listen(port, () => {
         console.log(`Server running on http://localhost:${port}`);
     });
 });
